@@ -68,21 +68,17 @@ function mercadopagopix_link($params)
     // Parâmetros da Fatura
     $invoiceId = $params['invoiceid'];
     $amount = number_format($params['amount'], 2, '.', '');
-    $currency = $params['currency'];
-
-    // Parâmetros do Cliente
-    $client = new WHMCS\User\Client($params['clientdetails']['userid']);
-    $clientDetails = $client->getDetails();
-    $clientNameParts = explode(' ', $clientDetails['fullname']);
-    $firstName = array_shift($clientNameParts);
-    $lastName = implode(' ', $clientNameParts);
+    
+    // Parâmetros do Cliente (Otimizado: pegando direto do array de parâmetros)
+    $firstName = $params['clientdetails']['firstname'];
+    $lastName = $params['clientdetails']['lastname'];
+    $email = $params['clientdetails']['email'];
 
     // URL do Sistema e de Callback
     $systemUrl = $params['systemurl'];
-    $callbackUrl = $systemUrl . '/modules/gateways/callback/mercadopagopix.php';
+    $callbackUrl = rtrim($systemUrl, '/') . '/modules/gateways/callback/mercadopagopix.php';
 
     // --- CHAMADA À API DO MERCADO PAGO PARA CRIAR O PAGAMENTO ---
-    
     $apiUrl = 'https://api.mercadopago.com/v1/payments';
 
     $payload = [
@@ -90,7 +86,7 @@ function mercadopagopix_link($params)
         'description' => "Pagamento Fatura #" . $invoiceId,
         'payment_method_id' => 'pix',
         'payer' => [
-            'email' => $clientDetails['email'],
+            'email' => $email,
             'first_name' => $firstName,
             'last_name' => $lastName,
         ],
@@ -107,17 +103,17 @@ function mercadopagopix_link($params)
     curl_setopt($ch, CURLOPT_HTTPHEADER, [
         'Content-Type: application/json',
         'Authorization: Bearer ' . $accessToken,
-        'X-Idempotency-Key: WHMCS-INV-' . $invoiceId . '-' . time() // Chave de idempotência para evitar pagamentos duplicados
+        'X-Idempotency-Key: WHMCS-INV-' . $invoiceId . '-' . time()
     ]);
 
     $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
     curl_close($ch);
 
     $responseData = json_decode($response, true);
 
     // --- TRATAMENTO DA RESPOSTA E EXIBIÇÃO DO HTML ---
-
     if ($httpCode == 201 && isset($responseData['point_of_interaction']['transaction_data'])) {
         $qrCodeBase64 = $responseData['point_of_interaction']['transaction_data']['qr_code_base64'];
         $qrCode = $responseData['point_of_interaction']['transaction_data']['qr_code'];
@@ -134,7 +130,7 @@ function mercadopagopix_link($params)
                 <input type="text" id="pixCode" value="' . htmlspecialchars($qrCode) . '" readonly style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px 0 0 4px; background-color: #fff;">
                 <button onclick="copyPixCode()" style="padding: 8px 12px; border: 1px solid #007bff; background-color: #007bff; color: white; border-radius: 0 4px 4px 0; cursor: pointer;">Copiar</button>
             </div>
-            <p id="copyFeedback" style="font-size: 12px; color: green; height: 15px;"></p>
+            <p id="copyFeedback" style="font-size: 12px; color: green; height: 15px; margin-top: 5px;"></p>
             
             <div id="countdown" style="margin-top: 20px; font-size: 14px; color: #d9534f;"></div>
         </div>
@@ -142,13 +138,25 @@ function mercadopagopix_link($params)
         <script>
             function copyPixCode() {
                 var copyText = document.getElementById("pixCode");
-                copyText.select();
-                copyText.setSelectionRange(0, 99999); // Para dispositivos móveis
-                document.execCommand("copy");
-                
                 var feedback = document.getElementById("copyFeedback");
-                feedback.textContent = "Código copiado!";
-                setTimeout(function() { feedback.textContent = ""; }, 3000);
+                
+                // API Moderna de Clipboard
+                if (navigator.clipboard && window.isSecureContext) {
+                    navigator.clipboard.writeText(copyText.value).then(function() {
+                        showFeedback(feedback);
+                    });
+                } else {
+                    // Fallback para navegadores antigos
+                    copyText.select();
+                    copyText.setSelectionRange(0, 99999);
+                    document.execCommand("copy");
+                    showFeedback(feedback);
+                }
+            }
+            
+            function showFeedback(element) {
+                element.textContent = "Código PIX copiado com sucesso!";
+                setTimeout(function() { element.textContent = ""; }, 3000);
             }
 
             var expirationTime = ' . $expirationTimestamp . ' * 1000;
@@ -167,7 +175,7 @@ function mercadopagopix_link($params)
                 var minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
                 var seconds = Math.floor((distance % (1000 * 60)) / 1000);
                 
-                countdownElement.innerHTML = "Este código expira em: " + minutes + "m " + seconds + "s";
+                countdownElement.innerHTML = "Este código expira em: <strong>" + minutes + "m " + seconds + "s</strong>";
             }
 
             updateCountdown();
@@ -176,8 +184,14 @@ function mercadopagopix_link($params)
 
         return $htmlOutput;
     } else {
-        // Log do erro e mensagem para o cliente
-        logTransaction($params['name'], $responseData, 'Erro ao gerar PIX');
+        // Log detalhado do erro para facilitar o suporte
+        $logData = [
+            'httpCode' => $httpCode,
+            'curlError' => $curlError,
+            'requestPayload' => $payload,
+            'responseData' => $responseData
+        ];
+        logTransaction($params['name'], $logData, 'Erro ao gerar PIX API');
         return '<div class="alert alert-danger">Ocorreu um erro ao gerar o PIX. Por favor, tente novamente mais tarde ou contate o suporte.</div>';
     }
 }
